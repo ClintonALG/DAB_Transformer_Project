@@ -1,28 +1,114 @@
+"""
+
+GIAI ĐOẠN 0 — Cấu hình toàn cục
+
+"""
+
 import platform
+
 import torch
 
+
+
 class Config:
-    # 📂 Đường dẫn dữ liệu local (Ân kiểm tra lại các folder train/val/test trên máy mình nhé)
-    TRAIN_PATH = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\train"
-    VAL_PATH   = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\val"
-    TEST_PATH  = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\test"
-    
-    # 💾 Thư mục lưu checkpoint (.pt)
+
+    # --- Dữ liệu GỐC (preprocess_resample.py) ---
+
+    RAW_TRAIN_PATH = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\train"
+
+    RAW_VAL_PATH   = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\val"
+
+    RAW_TEST_PATH  = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\test"
+
+
+
+    # --- Dữ liệu 16 kHz (train / val / test) ---
+
+    TRAIN_PATH = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\train"
+
+    VAL_PATH   = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\val"
+
+    TEST_PATH  = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\test"
+
+
+
+    TARGET_SAMPLE_RATE = 16000
+
     SAVE_DIR = "./checkpoints"
-    MAX_SAMPLES = 160000  # Giới hạn tối đa 10 giây để bảo vệ an toàn cho 4GB VRAM
-    
-    # 🧠 Cấu hình kiến trúc siêu nhẹ theo lời khuyên tối ưu hóa thực tế cho GTX 1650
+
+
+
+    # Giới hạn độ dài audio (samples @ 16kHz)
+
+    MAX_SAMPLES = 160000       # ~10s — val / test
+
+    MAX_SAMPLES_TRAIN = 120000  # ~7.5s — train (giảm spike VRAM khi bucket toàn file dài)
+
+
+
+    # --- Kiến trúc ---
+
     D_MODEL = 192
+
     NHEAD = 4
+
     NUM_LAYERS = 2
-    
-    # 🚀 Cấu hình huấn luyện tối ưu tốc độ phản hồi phần cứng
-    BATCH_SIZE = 2           
-    ACCUMULATION_STEPS = 4   # Gom 4 batch (tương đương Batch 8 ảo) mới cập nhật trọng số
-    LR = 5e-5
+
+
+
+    # --- Huấn luyện ---
+
+    # OOM trên 4GB: đổi BATCH_SIZE=4, ACCUMULATION_STEPS=4 (giữ effective batch=16)
+
+    BATCH_SIZE = 8
+
+    ACCUMULATION_STEPS = 2
+
+    LR = 3e-4
+
     NUM_EPOCHS = 30
+
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Đánh giá: WER/CER trên val (train), không trên train — giới hạn batch để nhanh mỗi epoch
-    VAL_EVAL_MAX_BATCHES = 40
-    NUM_WORKERS = 0 if platform.system() == "Windows" else 4
+    USE_GRADIENT_CHECKPOINT = False
+
+
+
+    # --- SpecAugment (augment.py, chỉ khi train) ---
+
+    USE_SPEC_AUGMENT = True
+
+    SPEC_FREQ_MASK_MAX = 24   # ~12% D_MODEL=192
+
+    SPEC_TIME_MASK_MAX = 40
+
+    SPEC_NUM_FREQ_MASKS = 2
+
+    SPEC_NUM_TIME_MASKS = 2
+
+
+
+    # --- Decode ---
+    # - VAL_DECODER: dùng trong train.py khi evaluate mỗi epoch (ưu tiên nhanh)
+    # - TEST_DECODER: dùng trong test_inference.py để lấy điểm báo cáo
+    VAL_DECODER = "greedy"
+    TEST_DECODER = "beam"
+    BEAM_SIZE = 5
+
+
+
+    # --- DataLoader ---
+
+    VAL_EVAL_MAX_BATCHES = 50
+
+    NUM_WORKERS = 2 if platform.system() == "Windows" else 4
+
+    PREFETCH_FACTOR = 2
+
+    BUCKET_BATCHING = True
+
+    # Không gom >N mẫu dài vào cùng batch (độ dài wav samples)
+
+    BUCKET_MAX_WAV_LEN = MAX_SAMPLES_TRAIN
+
+
