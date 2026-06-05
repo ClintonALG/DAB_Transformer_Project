@@ -169,10 +169,12 @@ class BucketBatchSampler(Sampler):
         self.shuffle = shuffle
 
         self.max_wav_len = max_wav_len or Config.BUCKET_MAX_WAV_LEN
-
-
+        self._cached_batches = None  # cache tránh build 2 lần
 
     def _build_batches(self):
+        # Trả cache nếu đã build (__len__ gọi trước __iter__ → chỉ sort 1 lần/epoch)
+        if self._cached_batches is not None:
+            return self._cached_batches
 
         order = sorted(range(len(self.lengths)), key=lambda i: self.lengths[i])
 
@@ -210,13 +212,15 @@ class BucketBatchSampler(Sampler):
 
             batches.append(current)
 
+        self._cached_batches = batches
         return batches
 
 
 
     def __iter__(self):
 
-        batches = self._build_batches()
+        batches = list(self._build_batches())  # list() để shuffle không ảnh hưởng cache
+        self._cached_batches = None  # reset sau mỗi epoch để shuffle lại đúng
 
         if self.shuffle:
 
@@ -285,5 +289,3 @@ def make_dataloader(dataset, shuffle=True):
         dataset, batch_size=Config.BATCH_SIZE, shuffle=shuffle, **loader_kw
 
     )
-
-

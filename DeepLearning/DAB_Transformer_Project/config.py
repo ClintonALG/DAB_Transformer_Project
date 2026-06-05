@@ -1,114 +1,65 @@
 """
-
-GIAI ĐOẠN 0 — Cấu hình toàn cục
-
+GIAI ĐOẠN 1 — Cấu hình tối ưu cho 8GB VRAM
 """
-
 import platform
-
 import torch
 
-
-
 class Config:
+    # --- Đường dẫn ---
+    RAW_TRAIN_PATH = r"C:\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\train"
+    RAW_VAL_PATH   = r"C:\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\val"
+    RAW_TEST_PATH  = r"C:\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\test"
 
-    # --- Dữ liệu GỐC (preprocess_resample.py) ---
-
-    RAW_TRAIN_PATH = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\train"
-
-    RAW_VAL_PATH   = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\val"
-
-    RAW_TEST_PATH  = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted\test"
-
-
-
-    # --- Dữ liệu 16 kHz (train / val / test) ---
-
-    TRAIN_PATH = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\train"
-
-    VAL_PATH   = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\val"
-
-    TEST_PATH  = r"C:\Users\clint\source\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\test"
-
-
+    TRAIN_PATH = r"C:\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\train"
+    VAL_PATH   = r"C:\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\val"
+    TEST_PATH  = r"C:\repos\DeepLearning\Data_AmThanh\Dataset_Splitted_16k\test"
 
     TARGET_SAMPLE_RATE = 16000
+    SAVE_DIR = "./checkpoints_phoneme_8vram" 
 
-    SAVE_DIR = "./checkpoints"
+    # --- Độ dài (Tăng lên 10s) ---
+    MAX_SAMPLES       = 160000   
+    MAX_SAMPLES_TRAIN = 160000   
 
+    # --- Bộ não (Giữ nguyên hoặc tăng D_MODEL nếu muốn sâu hơn) ---
+    D_MODEL    = 256   
+    NHEAD      = 8     
+    NUM_LAYERS = 4    
+    DROPOUT    = 0.15  
 
+    # --- CẤU HÌNH BATCH CHO 8GB ---
+    BATCH_SIZE          = 4     
+    ACCUMULATION_STEPS  = 8     # 8 * 4 = 32 (Effective Batch)
+    LR                  = 3e-4   
+    WEIGHT_DECAY        = 1e-2   
+    NUM_EPOCHS          = 70     
+    DEVICE              = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    USE_GRADIENT_CHECKPOINT = True  
 
-    # Giới hạn độ dài audio (samples @ 16kHz)
+    # --- LR Schedule ---
+    USE_ONE_CYCLE_LR    = True
+    WARMUP_PCT          = 0.10   
+    DIV_FACTOR          = 25     
+    FINAL_DIV_FACTOR    = 1e4    
 
-    MAX_SAMPLES = 160000       # ~10s — val / test
-
-    MAX_SAMPLES_TRAIN = 120000  # ~7.5s — train (giảm spike VRAM khi bucket toàn file dài)
-
-
-
-    # --- Kiến trúc ---
-
-    D_MODEL = 192
-
-    NHEAD = 4
-
-    NUM_LAYERS = 2
-
-
-
-    # --- Huấn luyện ---
-
-    # OOM trên 4GB: đổi BATCH_SIZE=4, ACCUMULATION_STEPS=4 (giữ effective batch=16)
-
-    BATCH_SIZE = 8
-
-    ACCUMULATION_STEPS = 2
-
-    LR = 3e-4
-
-    NUM_EPOCHS = 30
-
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    USE_GRADIENT_CHECKPOINT = False
-
-
-
-    # --- SpecAugment (augment.py, chỉ khi train) ---
-
-    USE_SPEC_AUGMENT = True
-
-    SPEC_FREQ_MASK_MAX = 24   # ~12% D_MODEL=192
-
-    SPEC_TIME_MASK_MAX = 40
-
+    # --- SpecAugment ---
+    USE_SPEC_AUGMENT    = True
+    SPEC_FREQ_MASK_MAX  = 32   
+    SPEC_TIME_MASK_MAX  = 50
     SPEC_NUM_FREQ_MASKS = 2
-
     SPEC_NUM_TIME_MASKS = 2
 
-
-
     # --- Decode ---
-    # - VAL_DECODER: dùng trong train.py khi evaluate mỗi epoch (ưu tiên nhanh)
-    # - TEST_DECODER: dùng trong test_inference.py để lấy điểm báo cáo
-    VAL_DECODER = "greedy"
-    TEST_DECODER = "beam"
-    BEAM_SIZE = 5
+    VAL_DECODER  = "greedy"   
+    TEST_DECODER = "greedy"
+    BEAM_SIZE    = 1            
 
+    EARLY_STOPPING_PATIENCE = 8   
+    EARLY_STOPPING_MIN_DELTA = 0.001
 
-
-    # --- DataLoader ---
-
-    VAL_EVAL_MAX_BATCHES = 50
-
-    NUM_WORKERS = 4 if platform.system() == "Windows" else 6
-
-    PREFETCH_FACTOR = 2
-
-    BUCKET_BATCHING = True
-
-    # Không gom >N mẫu dài vào cùng batch (độ dài wav samples)
-
-    BUCKET_MAX_WAV_LEN = MAX_SAMPLES_TRAIN
-
-
+    VAL_EVAL_MAX_BATCHES = 50 
+    NUM_WORKERS          = 0  # Tăng lên 4 để máy 8GB load dữ liệu nhanh hơn
+    PREFETCH_FACTOR      = 2       
+    BUCKET_BATCHING      = True
+    BUCKET_MAX_WAV_LEN   = MAX_SAMPLES_TRAIN

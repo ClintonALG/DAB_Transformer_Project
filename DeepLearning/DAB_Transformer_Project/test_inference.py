@@ -1,115 +1,144 @@
 """
-test_inference.py — Suy luận & đánh giá trên tập TEST
-
-Giai đoạn:
-  [I1] Nạp checkpoint đã train
-  [I2] DataLoader test (cùng tiền xử lý dataset.py [B][C])
-  [I3] evaluate_metrics — WER/CER toàn tập test
-  [I4] In mẫu minh họa
-
-Chạy:
-  python test_inference.py 10
-  python test_inference.py 10 --decoder greedy
-  python test_inference.py 10 --decoder beam --beam-size 8 --show-samples 5
+test_inference.py — Cỗ máy bắt lỗi phát âm (Chấm điểm trực tiếp File Giọng thật)
 """
-
 import os
 import argparse
-
+import json
 import torch
+import torchaudio
+import librosa
+import jiwer
+import numpy as np
+
 from config import Config
 from model import DAB_Transformer
-from dataset import L2ArcticDataset, make_dataloader
-from utils import (
-    text_process,
-    decode_frame_logits,
-    calculate_input_lengths,
-    evaluate_metrics,
-)
+from utils import text_process, decode_logits
 
+def build_pronunciation_feedback(target, predicted):
+    """
+    Sử dụng Jiwer Alignment để gióng hàng và phân tích lỗi đọc.
+    Trả về cấu trúc JSON sẵn sàng cho Frontend.
+    """
+    target_clean = " ".join(target.split())
+    pred_clean = " ".join(predicted.split())
+    
+    if not pred_clean:
+        return [{"status": "error", "message": "Không nhận diện được giọng nói"}]
+        
+    alignment = jiwer.process_words(target_clean, pred_clean).alignments[0]
+    t_words = target_clean.split()
+    p_words = pred_clean.split()
+    feedback_list = []
+    
+    for chunk in alignment:
+        error_type = chunk.type
+        if error_type == 'equal':
+            for i in range(chunk.ref_start_idx, chunk.ref_end_idx):
+                feedback_list.append({
+                    "phoneme": t_words[i], 
+                    "status": "correct", 
+                    "predicted": t_words[i]
+                })
+        elif error_type == 'substitute':
+            for i, j in zip(range(chunk.ref_start_idx, chunk.ref_end_idx), range(chunk.hyp_start_idx, chunk.hyp_end_idx)):
+                feedback_list.append({
+                    "phoneme": t_words[i], 
+                    "status": "substitution", 
+                    "predicted": p_words[j],
+                    "message": f"Nhầm /{t_words[i]}/ thành /{p_words[j]}/"
+                })
+        elif error_type == 'delete':
+            for i in range(chunk.ref_start_idx, chunk.ref_end_idx):
+                feedback_list.append({
+                    "phoneme": t_words[i], 
+                    "status": "deletion", 
+                    "predicted": "-",
+                    "message": f"Bạn bị nuốt âm /{t_words[i]}/"
+                })
+        elif error_type == 'insert':
+            for j in range(chunk.hyp_start_idx, chunk.hyp_end_idx):
+                feedback_list.append({
+                    "phoneme": "-", 
+                    "status": "insertion", 
+                    "predicted": p_words[j],
+                    "message": f"Phát âm thừa âm /{p_words[j]}/"
+                })
 
-def test_model(epoch_num=None, show_samples=10, decoder=None, beam_size=None):
-    # [I1] Chọn epoch & nạp trọng số
-    if epoch_num is None:
-        epoch_num = input("➡️ Nhập số Epoch bạn muốn test (ví dụ: 1, 5, 10): ").strip()
+    return feedback_list
 
-    decoder = (decoder or Config.TEST_DECODER).lower()
-    if decoder not in {"greedy", "beam"}:
-        raise ValueError("decoder phải là 'greedy' hoặc 'beam'")
-    beam_size = beam_size if beam_size is not None else Config.BEAM_SIZE
+def load_and_resample_audio(file_path, target_sr=16000):
+    """
+    Tự động đọc file wav và ép về 16kHz
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Không tìm thấy file audio: {file_path}")
+        
+    # Dùng librosa load để dễ dàng resample tự động từ mọi SR
+    wav_numpy, sr = librosa.load(file_path, sr=target_sr)
+    
+    # Chuyển numpy array thành Torch Tensor shape [1, T]
+    wav_tensor = torch.FloatTensor(wav_numpy).unsqueeze(0)
+    
+    return wav_tensor
 
+def test_real_audio(epoch_num, audio_path, target_text):
+    """
+    Chạy file ghi âm thực tế qua mô hình
+    """
     checkpoint_path = f"{Config.SAVE_DIR}/model_e{epoch_num}.pt"
     if not os.path.exists(checkpoint_path):
         print(f"❌ Không tìm thấy file checkpoint: {checkpoint_path}")
         return
 
+    # 1. Nạp Model
     model = DAB_Transformer(
         len(text_process.char_map), Config.D_MODEL, Config.NHEAD, Config.NUM_LAYERS
     ).to(Config.DEVICE)
 
     checkpoint = torch.load(checkpoint_path, map_location=Config.DEVICE, weights_only=True)
-    state = (
-        checkpoint["model_state_dict"]
-        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
-        else checkpoint
-    )
+    state = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
     model.load_state_dict(state)
     model.eval()
 
-    # [I2] Load test set
-    test_loader = make_dataloader(L2ArcticDataset(Config.TEST_PATH, text_process), shuffle=False)
+    # 2. Xử lý dữ liệu đầu vào
+    print(f"\n🎤 Đang xử lý file: {audio_path}")
+    print(f"🎯 Đoạn văn chuẩn (Target): '{target_text}'\n")
+    
+    try:
+        wav = load_and_resample_audio(audio_path, Config.TARGET_SAMPLE_RATE)
+        wav = wav.to(Config.DEVICE)
+        
+        # Lấy độ dài audio
+        w_lens = torch.tensor([wav.shape[1]], dtype=torch.long)
+        
+        # Chuyển text mục tiêu sang chuỗi âm vị (phonemes)
+        target_phonemes = " ".join(text_process.text_to_phonemes(target_text))
 
-    # [I3] Đánh giá định lượng
-    print(f"\n🎧 Đánh giá tập TEST — Epoch {epoch_num} ({decoder}, beam={beam_size})...")
-    avg_wer, avg_cer, n_samples = evaluate_metrics(
-        model,
-        test_loader,
-        Config.DEVICE,
-        log_samples=3,
-        decoder=decoder,
-        beam_size=beam_size,
-    )
-    print(f"\n📊 Kết quả TEST ({n_samples} mẫu):")
-    print(f"   WER: {avg_wer * 100:.2f}%")
-    print(f"   CER: {avg_cer * 100:.2f}%")
+    except Exception as e:
+        print(f"Lỗi khi xử lý file audio: {e}")
+        return
 
-    # [I4] Minh họa vài câu
-    if show_samples > 0:
-        print(f"\n--- {show_samples} mẫu minh họa ---")
-        with torch.no_grad():
-            for i, (wavs, labels, w_lens, l_lens) in enumerate(test_loader):
-                wavs = wavs.to(Config.DEVICE)
-                logits, _ = model(wavs)
-
-                t = int(calculate_input_lengths(w_lens)[0].item())
-                pred = decode_frame_logits(
-                    logits[0, :t],
-                    text_process,
-                    decoder=decoder,
-                    beam_size=beam_size,
-                )
-
-                target = text_process.int_to_text(labels[0][: l_lens[0]].tolist())
-                print(f"\n[Mẫu {i + 1}]")
-                print(f"Gốc: {target}")
-                print(f"Máy: {pred if pred else '(Không nhận diện được)'}")
-                if i + 1 >= show_samples:
-                    break
-
+    # 3. Chạy Inference
+    with torch.no_grad():
+        logits, _ = model(wav)
+        pred_phonemes = decode_logits(logits, w_lens, text_process)[0]
+    
+    # 4. Trích xuất phản hồi
+    feedback_json = build_pronunciation_feedback(target_phonemes, pred_phonemes)
+    
+    print("================ KẾT QUẢ ĐÁNH GIÁ ================")
+    if pred_phonemes.strip():
+        print(jiwer.visualize_alignment(jiwer.process_words(target_phonemes, pred_phonemes)))
+    
+    print("\n[📦 Dữ liệu JSON Backend trả về App Flutter]:")
+    print(json.dumps(feedback_json, indent=2, ensure_ascii=False))
+    print("\n")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Đánh giá mô hình trên tập TEST")
-    parser.add_argument("epoch", nargs="?", help="Số epoch checkpoint, ví dụ 30")
-    parser.add_argument("--decoder", choices=["greedy", "beam"], default=Config.TEST_DECODER)
-    parser.add_argument("--beam-size", type=int, default=Config.BEAM_SIZE)
-    parser.add_argument("--show-samples", type=int, default=10)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epoch", type=int, default=50, help="Số epoch checkpoint (mặc định 50)")
+    parser.add_argument("--audio", type=str, required=True, help="Đường dẫn đến file .wav của bạn")
+    parser.add_argument("--text", type=str, required=True, help="Câu tiếng Anh mà bạn đang đọc trong file audio")
+    
     args = parser.parse_args()
-
-    test_model(
-        epoch_num=args.epoch,
-        show_samples=args.show_samples,
-        decoder=args.decoder,
-        beam_size=args.beam_size,
-    )
-
-
+    test_real_audio(epoch_num=args.epoch, audio_path=args.audio, target_text=args.text)
